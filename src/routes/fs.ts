@@ -837,7 +837,28 @@ async function handleListDirs(request: Request, env: Env, user: any): Promise<Re
       return jsonResponse({ code: 403, message: '密码错误或无访问权限' }, 403);
     }
 
+    // The root of the user-path picker is a virtual directory when storages
+    // are mounted below `/` (for example `/aliyun` or `/onedrive`). In that
+    // case there is no storage row matching `/`, so expose the immediate
+    // enabled mount points instead of returning an empty picker.
+    const normalizedPath = ('/' + String(path || '/').replace(/^\/+|\/+$/g, '')).replace(/\/+/g, '/') || '/';
+    const allStorages = await env.DB.prepare(
+      'SELECT mount_path, modified FROM storages WHERE disabled = 0 ORDER BY order_num ASC, mount_path ASC'
+    ).all();
+    const virtualDirs = new Map<string, any>();
+    for (const row of (allStorages.results || []) as any[]) {
+      const mount = ('/' + String(row.mount_path || '').replace(/^\/+|\/+$/g, '')).replace(/\/+/g, '/');
+      if (mount === '/' || (normalizedPath !== '/' && !mount.startsWith(normalizedPath + '/'))) continue;
+      const rest = normalizedPath === '/' ? mount.slice(1) : mount.slice(normalizedPath.length + 1);
+      const name = rest.split('/').filter(Boolean)[0];
+      if (name && !virtualDirs.has(name)) {
+        virtualDirs.set(name, { name, modified: row.modified || new Date().toISOString() });
+      }
+    }
     const storage = await getStorageForPath(path, env);
+    if (!storage && virtualDirs.size > 0) {
+      return jsonResponse({ code: 200, message: 'success', data: Array.from(virtualDirs.values()) });
+    }
     if (!storage) {
       return jsonResponse({ code: 200, message: 'success', data: [] });
     }
